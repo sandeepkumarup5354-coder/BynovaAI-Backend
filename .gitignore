@@ -1,0 +1,48 @@
+# Secrets
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
+
+# Android / Gradle
+.gradle/
+build/
+app/build/
+local.properties
+
+# APKs
+*.apk
+
+# Backups
+backups/
+*.BACKUP
+*.bak
+*.backup
+*.BEFORE_*
+*.PRE_*
+
+# Local conversation data
+backend/conversations.json
+backend/conversations.json.*
+
+# Source backups / temporary files
+**/*_BACKUP
+**/*.BACKUP
+**/*.bak
+**/*.backup
+**/*.BEFORE_*
+**/*.PRE_*
+**/showHome_before_*
+
+# Backup copies with extensions after source filename
+app/src/main/java/com/bynova/ai/MainActivity.java.*
+backend/app/main.py.*
+app/src/main/java/com/bynova/ai/showHome_*
+backend/conversations.json.*
