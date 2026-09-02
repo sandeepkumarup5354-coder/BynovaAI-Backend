@@ -432,7 +432,7 @@ def chat_stream():
                 return
 
             # Save the completed conversation exactly once.
-            # Keep the same structure used by the other chat endpoints.
+            # Include the current user message and completed AI reply.
             with memory_lock:
                 if client_id not in conversations:
                     conversations[client_id] = {}
@@ -443,12 +443,26 @@ def chat_stream():
                 ):
                     conversations[client_id] = {}
 
+                updated_history = (
+                    history.copy()
+                    if isinstance(history, list)
+                    else []
+                )
+
+                updated_history.append({
+                    "role": "user",
+                    "parts": [{"text": message}]
+                })
+
+                updated_history.append({
+                    "role": "model",
+                    "parts": [{"text": final_reply}]
+                })
+
+                updated_history = updated_history[-MAX_HISTORY:]
+
                 conversations[client_id][chat_id] = {
-                    "messages": (
-                        history[-MAX_HISTORY:]
-                        if isinstance(history, list)
-                        else []
-                    ),
+                    "messages": updated_history,
                     "created_at": (
                         conversations[client_id]
                         .get(chat_id, {})
