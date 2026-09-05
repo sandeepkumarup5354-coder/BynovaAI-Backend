@@ -66,63 +66,114 @@ class SearchEngine:
                 params={"q": query},
                 headers={
                     "User-Agent": (
-                        "Mozilla/5.0 "
-                        "(Linux; Android 15) "
+                        "Mozilla/5.0 (Linux; Android 15) "
                         "AppleWebKit/537.36 "
                         "Chrome/140.0 Mobile Safari/537.36"
-                    )
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
                 },
                 timeout=15,
             )
 
             response.raise_for_status()
-
             html = response.text
-
-            result_blocks = re.findall(
-                r'<div class="result[^"]*".*?</div>\s*</div>',
-                html,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
 
             results: List[Dict[str, str]] = []
 
-            for block in result_blocks:
-                title_match = re.search(
-                    r'class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                    block,
-                    flags=re.IGNORECASE | re.DOTALL,
+            # DuckDuckGo result links can appear in different HTML forms.
+            link_patterns = [
+                r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                r'<a[^>]*href="([^"]+)"[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>',
+            ]
+
+            matches = []
+            for pattern in link_patterns:
+                matches.extend(
+                    re.findall(
+                        pattern,
+                        html,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
                 )
 
-                if not title_match:
-                    continue
+            seen_urls = set()
 
-                href = self._clean_url(title_match.group(1))
-                title = self._clean_text(title_match.group(2))
-
-                snippet_match = re.search(
-                    r'class="result__snippet"[^>]*>(.*?)</',
-                    block,
-                    flags=re.IGNORECASE | re.DOTALL,
-                )
-
-                snippet = (
-                    self._clean_text(snippet_match.group(1))
-                    if snippet_match
-                    else ""
-                )
+            for href, raw_title in matches:
+                href = self._clean_url(href)
+                title = self._clean_text(raw_title)
 
                 if not href or not title:
                     continue
 
+                if href in seen_urls:
+                    continue
+
+                seen_urls.add(href)
+
                 results.append({
                     "title": title,
                     "url": href,
-                    "snippet": snippet,
+                    "snippet": "",
                 })
 
                 if len(results) >= max_results:
                     break
+
+            # Fallback parser: inspect result containers individually.
+            if not results:
+                blocks = re.findall(
+                    r'<div[^>]+class="[^"]*result[^"]*"[^>]*>(.*?)'
+                    r'(?=<div[^>]+class="[^"]*result[^"]*"|</main>|</body>)',
+                    html,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+
+                for block in blocks:
+                    title_match = re.search(
+                        r'<a[^>]+href="([^"]+)"[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>',
+                        block,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+
+                    if not title_match:
+                        title_match = re.search(
+                            r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+                            block,
+                            flags=re.IGNORECASE | re.DOTALL,
+                        )
+
+                    if not title_match:
+                        continue
+
+                    href = self._clean_url(title_match.group(1))
+                    title = self._clean_text(title_match.group(2))
+
+                    if not href or not title or href in seen_urls:
+                        continue
+
+                    snippet_match = re.search(
+                        r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</',
+                        block,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+
+                    snippet = (
+                        self._clean_text(snippet_match.group(1))
+                        if snippet_match
+                        else ""
+                    )
+
+                    seen_urls.add(href)
+
+                    results.append({
+                        "title": title,
+                        "url": href,
+                        "snippet": snippet,
+                    })
+
+                    if len(results) >= max_results:
+                        break
 
             return {
                 "success": True,
@@ -147,7 +198,7 @@ class SearchEngine:
                 "type": "web",
                 "query": query,
                 "results": [],
-                "message": f"Web search parser error: {exc}",
+                "message": f"Web search parser failed: {exc}",
             }
 
     def youtube_search(

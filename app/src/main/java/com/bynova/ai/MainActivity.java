@@ -36,12 +36,13 @@ public class MainActivity extends Activity {
     final int WHITE = Color.rgb(245, 246, 255);
     final int MUTED = Color.rgb(165, 171, 198);
 
-    final String API_BASE_URL = "http://127.0.0.1:8081";
+    final String API_BASE_URL = "http://127.0.0.1:8080";
     final String BACKEND_URL = API_BASE_URL + "/chat";
     final String STREAM_URL = API_BASE_URL + "/chat/stream";
     final String IMAGE_URL = API_BASE_URL + "/image";
     String CLIENT_ID;
     String currentChatId = "";
+    android.net.Uri pendingImageUri = null;
 
     String getClientId() {
         android.content.SharedPreferences prefs =
@@ -62,6 +63,7 @@ public class MainActivity extends Activity {
     ScrollView chatScroll;
 
     EditText chatInput;
+    TextView micButton;
 
     SpeechRecognizer speechRecognizer;
     TextToSpeech textToSpeech;
@@ -135,14 +137,24 @@ public class MainActivity extends Activity {
 
                             @Override
                             public void onDone(String utteranceId) {
-                                // Do not automatically restart microphone.
-                                // This prevents the AI voice from being
-                                // captured again and creating a repeat loop.
+                                runOnUiThread(() -> {
+                                    if (voiceMode && !speechQueue.isEmpty()) {
+                                        speakNextChunk();
+                                    } else {
+                                        ttsSpeaking = false;
+                                    }
+                                });
                             }
 
                             @Override
                             public void onError(String utteranceId) {
-                                // Do not restart microphone automatically.
+                                runOnUiThread(() -> {
+                                    if (voiceMode && !speechQueue.isEmpty()) {
+                                        speakNextChunk();
+                                    } else {
+                                        ttsSpeaking = false;
+                                    }
+                                });
                             }
                         });
                     }
@@ -167,10 +179,9 @@ public class MainActivity extends Activity {
 
         try {
             String sample = text.trim();
-
             Locale selected = Locale.US;
 
-            // Detect common scripts first.
+            // Detect the reply language from its script.
             if (sample.matches(".*[\\u0900-\\u097F].*")) {
                 selected = new Locale("hi", "IN");
             } else if (sample.matches(".*[\\u0980-\\u09FF].*")) {
@@ -189,24 +200,92 @@ public class MainActivity extends Activity {
                 selected = new Locale("ml", "IN");
             } else if (sample.matches(".*[\\u0D80-\\u0DFF].*")) {
                 selected = new Locale("si", "LK");
-            } else {
-                selected = Locale.US;
             }
+
+            Locale actualLocale = Locale.US;
 
             if (tts.isLanguageAvailable(selected)
                     >= TextToSpeech.LANG_AVAILABLE) {
+                actualLocale = selected;
                 tts.setLanguage(selected);
             } else {
                 tts.setLanguage(Locale.US);
             }
 
-            tts.setSpeechRate(0.95f);
-            tts.setPitch(1.05f);
+            // On Android 5+, prefer the best installed voice matching
+            // the detected language. Prefer offline, high-quality voices.
+            if (android.os.Build.VERSION.SDK_INT >= 21) {
+                java.util.Set<android.speech.tts.Voice> voices =
+                        tts.getVoices();
+
+                android.speech.tts.Voice bestVoice = null;
+                int bestScore = Integer.MIN_VALUE;
+
+                if (voices != null) {
+                    for (android.speech.tts.Voice voice : voices) {
+                        if (voice == null || voice.getLocale() == null) {
+                            continue;
+                        }
+
+                        Locale voiceLocale = voice.getLocale();
+
+                        if (!voiceLocale.getLanguage()
+                                .equalsIgnoreCase(
+                                        actualLocale.getLanguage())) {
+                            continue;
+                        }
+
+                        int score = 0;
+
+                        // Exact country match is better.
+                        if (actualLocale.getCountry().equalsIgnoreCase(
+                                voiceLocale.getCountry())) {
+                            score += 30;
+                        }
+
+                        // Prefer voices that are not network dependent.
+                        if (!voice.isNetworkConnectionRequired()) {
+                            score += 20;
+                        }
+
+                        // Prefer voices with better reported quality.
+                        if (voice.getQuality()
+                                >= android.speech.tts.Voice.QUALITY_NORMAL) {
+                            score += 10;
+                        }
+
+                        // Prefer a female voice when the engine exposes
+                        // gender information through its voice name.
+                        String name = voice.getName() == null
+                                ? ""
+                                : voice.getName().toLowerCase(Locale.US);
+
+                        if (name.contains("female")
+                                || name.contains("feminine")
+                                || name.contains("woman")
+                                || name.contains("girl")) {
+                            score += 15;
+                        }
+
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestVoice = voice;
+                        }
+                    }
+                }
+
+                if (bestVoice != null) {
+                    tts.setVoice(bestVoice);
+                }
+            }
+
+            // Natural conversational settings.
+            tts.setSpeechRate(0.92f);
+            tts.setPitch(1.0f);
 
         } catch (Exception ignored) {
         }
     }
-
 
     void requestLocationPermission() {
         if (android.os.Build.VERSION.SDK_INT >= 23) {
@@ -315,6 +394,8 @@ public class MainActivity extends Activity {
                 if (speechRecognizer != null) {
                     voiceMode = true;
                     voiceReplyMode = true;
+                    isListening = false;
+                    updateMicUi();
                     startListeningNow();
                 } else {
                     Toast.makeText(
@@ -334,25 +415,59 @@ public class MainActivity extends Activity {
         }
     }
 
-    void startVoiceInput() {
-        if (voiceMode) {
-            voiceMode = false;
-            voiceReplyMode = false;
-            isListening = false;
-
-            try {
-                if (speechRecognizer != null) {
-                    speechRecognizer.stopListening();
-                    speechRecognizer.cancel();
-                }
-            } catch (Exception ignored) {
+    void updateMicUi() {
+        runOnUiThread(() -> {
+            if (micButton == null) {
+                return;
             }
 
+            if (voiceMode && isListening) {
+                micButton.setText("■");
+                micButton.setTextColor(WHITE);
+                micButton.setBackground(round(PRIMARY, 16));
+                micButton.setContentDescription(
+                        "Microphone ON. Listening. Tap to stop."
+                );
+            } else {
+                micButton.setText("🎙");
+                micButton.setTextColor(WHITE);
+                micButton.setBackground(round(CARD, 16));
+                micButton.setContentDescription(
+                        "Microphone OFF. Tap to speak."
+                );
+            }
+        });
+    }
+
+    void stopVoiceInput(boolean showMessage) {
+        voiceMode = false;
+        voiceReplyMode = false;
+        isListening = false;
+
+        try {
+            if (speechRecognizer != null) {
+                speechRecognizer.stopListening();
+                speechRecognizer.cancel();
+            }
+        } catch (Exception ignored) {
+        }
+
+        updateMicUi();
+
+        if (showMessage) {
             Toast.makeText(
                     MainActivity.this,
-                    "Voice conversation stopped",
+                    "Microphone OFF",
                     Toast.LENGTH_SHORT
             ).show();
+        }
+    }
+
+    void startVoiceInput() {
+
+        // Mic ON -> one tap immediately turns it OFF.
+        if (voiceMode) {
+            stopVoiceInput(true);
             return;
         }
 
@@ -380,15 +495,19 @@ public class MainActivity extends Activity {
                     "Voice recognition is not available",
                     Toast.LENGTH_SHORT
             ).show();
+            updateMicUi();
             return;
         }
 
         voiceMode = true;
         voiceReplyMode = true;
+        isListening = false;
+
+        updateMicUi();
 
         Toast.makeText(
                 MainActivity.this,
-                "Voice conversation started",
+                "Microphone ON — Listening...",
                 Toast.LENGTH_SHORT
         ).show();
 
@@ -412,7 +531,6 @@ public class MainActivity extends Activity {
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
             );
 
-            // Force Hindi (India) recognition.
             intent.putExtra(
                     RecognizerIntent.EXTRA_LANGUAGE,
                     "hi-IN"
@@ -428,9 +546,10 @@ public class MainActivity extends Activity {
                     false
             );
 
+            // Enable live/partial speech recognition.
             intent.putExtra(
                     RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                    false
+                    true
             );
 
             intent.putExtra(
@@ -439,10 +558,16 @@ public class MainActivity extends Activity {
             );
 
             isListening = true;
+            updateMicUi();
+
             speechRecognizer.startListening(intent);
 
         } catch (Exception e) {
             isListening = false;
+            voiceMode = false;
+            voiceReplyMode = false;
+
+            updateMicUi();
 
             Toast.makeText(
                     MainActivity.this,
@@ -972,20 +1097,13 @@ public class MainActivity extends Activity {
 
                 tts.speak(
                         chunk,
-                        TextToSpeech.QUEUE_FLUSH,
+                        ttsSpeaking && !speechQueue.isEmpty()
+                                ? TextToSpeech.QUEUE_ADD
+                                : TextToSpeech.QUEUE_FLUSH,
                         params,
                         utteranceId
                 );
 
-                // AI bolte waqt microphone ko interruption ke liye listen karvao.
-                new Handler(Looper.getMainLooper()).postDelayed(
-                        () -> {
-                            if (voiceMode && ttsSpeaking && !interruptionListening) {
-                                listenForInterruption();
-                            }
-                        },
-                        150
-                );
 
             } else {
 
@@ -1215,7 +1333,7 @@ public class MainActivity extends Activity {
                 )
         );
 
-        TextView mic = text(
+        TextView mic = micButton = text(
                 "🎙",
                 21,
                 WHITE
@@ -1329,8 +1447,16 @@ public class MainActivity extends Activity {
 
             input.setText("");
 
-            addUserMessage(message);
-            sendToStreamingBackend(message);
+            if (pendingImageUri != null) {
+                android.net.Uri imageUri = pendingImageUri;
+                pendingImageUri = null;
+
+                addUserMessage("Image: " + message);
+                sendImageToBackend(imageUri, message);
+            } else {
+                addUserMessage(message);
+                sendToStreamingBackend(message);
+            }
 
             // Keep input ready for the next message.
             input.requestFocus();
@@ -1361,6 +1487,7 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         input.requestFocus();
+        restoreChatInputFocus();
         scrollChatToBottom();
     }
 
@@ -2427,9 +2554,31 @@ public class MainActivity extends Activity {
                                 final String liveText =
                                         fullReply.toString();
 
-                                runOnUiThread(() ->
-                                        updateStreamingMessage(liveText)
-                                );
+                                runOnUiThread(() -> {
+                                    if (activeStreamingCard == null) {
+                                        activeStreamingCard =
+                                                (LinearLayout) createStreamingCard();
+
+                                        messages.addView(
+                                                activeStreamingCard,
+                                                new LinearLayout.LayoutParams(
+                                                        -2,
+                                                        -2
+                                                )
+                                        );
+                                    }
+
+                                    if (activeStreamingCard.getChildCount() >= 2) {
+                                        View body =
+                                                activeStreamingCard.getChildAt(1);
+
+                                        if (body instanceof TextView) {
+                                            ((TextView) body).setText(liveText);
+                                        }
+                                    }
+
+                                    scrollChatToBottom();
+                                });
                             }
                         }
 
@@ -2973,7 +3122,7 @@ public class MainActivity extends Activity {
             boolean heading =
                     line.matches("^#{1,6}\\s+.+")
                     || line.matches(
-                            "^(Topic|Answer|Summary|Important|Note|Steps|Solution|Result|Conclusion)\\s*:?$"
+                            "^(Topic|Answer|Summary|Important|Note|Steps|Solution|Result|Conclusion|Warning|Success|Error)\\s*:?$"
                     );
 
             String clean = line.replaceFirst(
@@ -2999,8 +3148,17 @@ public class MainActivity extends Activity {
                 );
 
                 builder.setSpan(
+                        new android.text.style.ForegroundColorSpan(
+                                PRIMARY
+                        ),
+                        start,
+                        end,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+
+                builder.setSpan(
                         new android.text.style.RelativeSizeSpan(
-                                1.12f
+                                1.10f
                         ),
                         start,
                         end,
@@ -3024,6 +3182,135 @@ public class MainActivity extends Activity {
             }
         }
 
+        // Highlight important status words.
+        String[] importantWords = {
+                "IMPORTANT",
+                "Important",
+                "WARNING",
+                "Warning",
+                "SUCCESS",
+                "Success",
+                "ERROR",
+                "Error",
+                "NOTE",
+                "Note"
+        };
+
+        for (String word : importantWords) {
+
+            java.util.regex.Matcher statusMatcher =
+                    java.util.regex.Pattern
+                            .compile(
+                                    "\\b" + java.util.regex.Pattern.quote(word) + "\\b"
+                            )
+                            .matcher(builder.toString());
+
+            while (statusMatcher.find()) {
+
+                int start = statusMatcher.start();
+                int end = statusMatcher.end();
+
+                int statusColor = PRIMARY;
+
+                if (word.equalsIgnoreCase("SUCCESS")) {
+                    statusColor = Color.rgb(90, 210, 140);
+                } else if (word.equalsIgnoreCase("WARNING")) {
+                    statusColor = Color.rgb(255, 190, 80);
+                } else if (word.equalsIgnoreCase("ERROR")) {
+                    statusColor = Color.rgb(255, 100, 110);
+                }
+
+                builder.setSpan(
+                        new android.text.style.ForegroundColorSpan(
+                                statusColor
+                        ),
+                        start,
+                        end,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+
+                builder.setSpan(
+                        new android.text.style.StyleSpan(
+                                Typeface.BOLD
+                        ),
+                        start,
+                        end,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+            }
+        }
+
+        // Highlight inline code such as `gradle build`
+        java.util.regex.Pattern inlineCode =
+                java.util.regex.Pattern.compile("`([^`]+)`");
+
+        java.util.regex.Matcher codeMatcher =
+                inlineCode.matcher(builder.toString());
+
+        while (codeMatcher.find()) {
+
+            int start = codeMatcher.start();
+            int end = codeMatcher.end();
+
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            PRIMARY
+                    ),
+                    start,
+                    end,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+
+            builder.setSpan(
+                    new android.text.style.StyleSpan(
+                            Typeface.BOLD
+                    ),
+                    start,
+                    end,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+
+            builder.setSpan(
+                    new android.text.style.TypefaceSpan(
+                            Typeface.MONOSPACE
+                    ),
+                    start,
+                    end,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
+        // Highlight URLs without changing the actual URL text.
+        java.util.regex.Pattern urlPattern =
+                java.util.regex.Pattern.compile(
+                        "(https?://[^\\s]+)"
+                );
+
+        java.util.regex.Matcher urlMatcher =
+                urlPattern.matcher(builder.toString());
+
+        while (urlMatcher.find()) {
+
+            int start = urlMatcher.start();
+            int end = urlMatcher.end();
+
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            PRIMARY
+                    ),
+                    start,
+                    end,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+
+            builder.setSpan(
+                    new android.text.style.UnderlineSpan(),
+                    start,
+                    end,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
         return builder;
     }
 
@@ -3040,6 +3327,172 @@ public class MainActivity extends Activity {
                 createSmartReplyView(part.trim());
 
         card.addView(explanation);
+    }
+
+    void applyCodeSyntaxHighlight(
+            android.text.SpannableStringBuilder builder,
+            String code,
+            String language
+    ) {
+
+        if (code == null || code.isEmpty()) {
+            return;
+        }
+
+        String upperLanguage =
+                language == null
+                        ? "CODE"
+                        : language.toUpperCase();
+
+        int keywordColor =
+                Color.rgb(180, 150, 255);
+
+        int stringColor =
+                Color.rgb(120, 220, 170);
+
+        int numberColor =
+                Color.rgb(255, 190, 110);
+
+        int commentColor =
+                Color.rgb(130, 145, 170);
+
+        int typeColor =
+                Color.rgb(100, 190, 255);
+
+        java.util.regex.Pattern pattern =
+                java.util.regex.Pattern.compile(
+                        "\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'"
+                );
+
+        java.util.regex.Matcher matcher =
+                pattern.matcher(code);
+
+        while (matcher.find()) {
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            stringColor
+                    ),
+                    matcher.start(),
+                    matcher.end(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
+        java.util.regex.Pattern numberPattern =
+                java.util.regex.Pattern.compile(
+                        "\\b\\d+(?:\\.\\d+)?\\b"
+                );
+
+        matcher = numberPattern.matcher(code);
+
+        while (matcher.find()) {
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            numberColor
+                    ),
+                    matcher.start(),
+                    matcher.end(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
+        String keywords;
+
+        if (upperLanguage.equals("PYTHON")) {
+            keywords =
+                    "\\b(def|class|return|if|else|elif|for|while|in|"
+                    + "import|from|as|try|except|finally|with|lambda|"
+                    + "True|False|None|and|or|not|is|async|await|"
+                    + "yield|pass|break|continue)\\b";
+        } else if (
+                upperLanguage.equals("JAVA") ||
+                upperLanguage.equals("KOTLIN")
+        ) {
+            keywords =
+                    "\\b(public|private|protected|class|interface|"
+                    + "static|final|void|int|long|double|float|boolean|"
+                    + "new|return|if|else|for|while|switch|case|break|"
+                    + "continue|try|catch|finally|throw|throws|"
+                    + "extends|implements|this|super|true|false|null|"
+                    + "fun|val|var|when|object|data|is|in)\\b";
+        } else if (
+                upperLanguage.equals("JAVASCRIPT") ||
+                upperLanguage.equals("JS")
+        ) {
+            keywords =
+                    "\\b(const|let|var|function|return|if|else|for|"
+                    + "while|new|class|extends|import|from|export|"
+                    + "async|await|try|catch|throw|true|false|null|"
+                    + "undefined|this)\\b";
+        } else if (
+                upperLanguage.equals("BASH") ||
+                upperLanguage.equals("SHELL")
+        ) {
+            keywords =
+                    "\\b(if|then|else|fi|for|while|do|done|in|case|"
+                    + "esac|function)\\b";
+        } else {
+            keywords =
+                    "\\b(class|public|private|protected|return|if|"
+                    + "else|for|while|new|true|false|null|void|"
+                    + "function|const|let|var|import|from|export)\\b";
+        }
+
+        matcher =
+                java.util.regex.Pattern
+                        .compile(keywords)
+                        .matcher(code);
+
+        while (matcher.find()) {
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            keywordColor
+                    ),
+                    matcher.start(),
+                    matcher.end(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
+        java.util.regex.Pattern typePattern =
+                java.util.regex.Pattern.compile(
+                        "\\b(String|Integer|Long|Double|Float|Boolean|"
+                        + "List|Map|Set|ArrayList|HashMap|"
+                        + "StringBuilder|TextView|LinearLayout|"
+                        + "JSONObject|JSONArray)\\b"
+                );
+
+        matcher = typePattern.matcher(code);
+
+        while (matcher.find()) {
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            typeColor
+                    ),
+                    matcher.start(),
+                    matcher.end(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
+
+        java.util.regex.Pattern commentPattern =
+                java.util.regex.Pattern.compile(
+                        "(//.*$|#.*$)",
+                        java.util.regex.Pattern.MULTILINE
+                );
+
+        matcher = commentPattern.matcher(code);
+
+        while (matcher.find()) {
+            builder.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            commentColor
+                    ),
+                    matcher.start(),
+                    matcher.end(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            );
+        }
     }
 
     void addFormattedResponse(
@@ -3197,11 +3650,22 @@ public class MainActivity extends Activity {
 
                 codeScroll.setFillViewport(false);
 
-                TextView codeView = text(
+                android.text.SpannableStringBuilder codeBuilder =
+                        new android.text.SpannableStringBuilder(code);
+
+                applyCodeSyntaxHighlight(
+                        codeBuilder,
                         code,
+                        language
+                );
+
+                TextView codeView = text(
+                        "",
                         13,
                         WHITE
                 );
+
+                codeView.setText(codeBuilder);
 
                 codeView.setTypeface(
                         Typeface.MONOSPACE
@@ -3482,7 +3946,12 @@ public class MainActivity extends Activity {
         android.net.Uri selectedUri = data.getData();
 
         if (requestCode == 9002) {
-            sendImageToBackend(selectedUri);
+            pendingImageUri = selectedUri;
+            Toast.makeText(
+                    this,
+                    "Image attached — type your question",
+                    Toast.LENGTH_SHORT
+            ).show();
             return;
         }
 
@@ -3754,7 +4223,7 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    void sendImageToBackend(android.net.Uri uri) {
+    void sendImageToBackend(android.net.Uri uri, String message) {
         new Thread(() -> {
             HttpURLConnection connection = null;
 
@@ -3815,7 +4284,7 @@ public class MainActivity extends Activity {
                         ("--" + boundary + "\r\n" +
                         "Content-Disposition: form-data; " +
                         "name=\"message\"\r\n\r\n" +
-                        "Analyze this image and explain what you see." +
+                        message +
                         "\r\n").getBytes(
                                 StandardCharsets.UTF_8
                         )

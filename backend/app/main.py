@@ -1,8 +1,32 @@
 from flask import Flask, request, jsonify, Response
+
+# Modular BynovaAI components
+from app.core.config import (
+    GEMINI_MODEL as MODULAR_GEMINI_MODEL,
+    GEMINI_MODELS as MODULAR_GEMINI_MODELS,
+    GEMINI_BASE_URL as MODULAR_GEMINI_BASE_URL,
+    MEMORY_FILE as MODULAR_MEMORY_FILE,
+    MAX_HISTORY as MODULAR_MAX_HISTORY,
+)
+from app.core.gemini import (
+    call_gemini_with_retry as modular_call_gemini,
+    stream_gemini_with_fallback as modular_stream_gemini,
+)
+from app.memory.manager import memory as modular_memory
+from app.agents.bynova_agent import (
+    AI_SYSTEM_PROMPT as MODULAR_AI_SYSTEM_PROMPT,
+    build_contents as modular_build_contents,
+    build_language_instruction as modular_build_language_instruction,
+)
+from app.search.search_engine import search_engine
+from app.tools.tool_manager import tool_manager
+from app.router import smart_router
+from app.multimodal.processor import multimodal
 from dotenv import load_dotenv
 import os
 import requests
 import threading
+import time as _latency_time
 import json
 import uuid
 from datetime import datetime, timezone
@@ -11,22 +35,10 @@ load_dotenv("backend/.env")
 
 app = Flask(__name__)
 
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.1-flash-lite"
-)
+GEMINI_MODEL = MODULAR_GEMINI_MODEL
+GEMINI_MODELS = MODULAR_GEMINI_MODELS
+GEMINI_BASE_URL = MODULAR_GEMINI_BASE_URL
 
-# Stable models confirmed to work with this API key.
-# Primary = fast/light model, fallback = stronger model.
-GEMINI_MODELS = [
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite"
-]
-
-GEMINI_BASE_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-)
 
 
 # Advanced AI behaviour
@@ -64,45 +76,10 @@ Rules:
 10. Answer naturally and professionally.
 """
 
-# Persistent conversation memory.
-# Each client gets its own conversation.
-MEMORY_FILE = "backend/conversations.json"
-conversations = {}
-memory_lock = threading.Lock()
+# Modular persistent conversation memory.
+MEMORY_FILE = MODULAR_MEMORY_FILE
+MAX_HISTORY = MODULAR_MAX_HISTORY
 
-MAX_HISTORY = 12
-
-
-def load_memory():
-    global conversations
-
-    try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        if isinstance(data, dict):
-            conversations = data
-        else:
-            conversations = {}
-
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        conversations = {}
-
-
-def save_memory():
-    try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                conversations,
-                f,
-                ensure_ascii=False,
-                indent=2
-            )
-    except OSError:
-        pass
-
-
-load_memory()
 
 
 @app.get("/")
@@ -117,112 +94,175 @@ def home():
 
 
 def call_gemini_with_retry(payload, api_key, timeout=45):
-    """
-    Tries multiple Gemini models with automatic retry.
-    Temporary 429/5xx errors cause the next model to be tried.
-    """
-    import time
-
-    last_response = None
-
-    for model in GEMINI_MODELS:
-        url = GEMINI_BASE_URL + model + ":generateContent"
-
-        for attempt in range(3):
-            try:
-                response = requests.post(
-                    url,
-                    params={"key": api_key},
-                    json=payload,
-                    timeout=timeout
-                )
-
-                last_response = response
-
-                if response.ok:
-                    return response
-
-                if response.status_code in (
-                    429, 500, 502, 503, 504
-                ):
-                    if attempt < 2:
-                        time.sleep(1.5 * (attempt + 1))
-                        continue
-
-                    # This model is temporarily unavailable.
-                    # Move to the next fallback model.
-                    break
-
-                # Authentication, bad request, etc.
-                # Do not hide the real error.
-                return response
-
-            except requests.RequestException as e:
-                if attempt < 2:
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
-
-                last_response = None
-                break
-
-    return last_response
-
-
-
-def build_advanced_contents(history, message):
-    """
-    Build Gemini conversation contents with the Bynova AI
-    behaviour included in the first user message.
-    """
-    contents = []
-
-    if not isinstance(history, list):
-        history = []
-
-    for item in history[-MAX_HISTORY:]:
-        if not isinstance(item, dict):
-            continue
-
-        role = item.get("role")
-        parts = item.get("parts", [])
-
-        if role not in ("user", "model"):
-            continue
-
-        if not isinstance(parts, list) or not parts:
-            continue
-
-        clean_parts = []
-
-        for part in parts:
-            if isinstance(part, dict) and part.get("text"):
-                clean_parts.append({
-                    "text": str(part["text"])
-                })
-
-        if clean_parts:
-            contents.append({
-                "role": role,
-                "parts": clean_parts
-            })
-
-    advanced_message = (
-        AI_SYSTEM_PROMPT
-        + "\n\nUser request:\n"
-        + str(message).strip()
+    return modular_call_gemini(
+        payload,
+        api_key,
+        timeout=timeout
     )
 
-    contents.append({
-        "role": "user",
-        "parts": [
-            {
-                "text": advanced_message
-            }
-        ]
-    })
 
-    return contents
 
+def build_search_context(message):
+    """
+    Detect and execute real web/YouTube searches.
+
+    Extracts the actual topic from natural-language search requests.
+    """
+    message = (message or "").strip()
+
+    if not message:
+        return {
+            "used": False,
+            "type": None,
+            "query": "",
+            "results": [],
+            "context": "",
+        }
+
+    lower = message.lower()
+
+    youtube_words = ("youtube", "video", "videos", "watch")
+    web_words = (
+        "search", "latest", "today", "news", "current",
+        "find", "lookup", "website", "web", "internet"
+    )
+
+    if not any(word in lower for word in youtube_words + web_words):
+        return {
+            "used": False,
+            "type": None,
+            "query": "",
+            "results": [],
+            "context": "",
+        }
+
+    query = message
+
+    # Remove search instruction from the beginning.
+    prefixes = (
+        "search the web for",
+        "search web for",
+        "search the internet for",
+        "search internet for",
+        "search for",
+        "look up",
+        "lookup",
+        "find me",
+        "find",
+    )
+
+    qlower = query.lower()
+
+    for prefix in prefixes:
+        if qlower.startswith(prefix):
+            query = query[len(prefix):].strip()
+            break
+
+    # Remove everything after common answer-request markers.
+    markers = (
+        " and tell me",
+        " and give me",
+        " and show me",
+        " with the source",
+        " with source",
+        " with the link",
+        " with link",
+        " source link",
+    )
+
+    qlower = query.lower()
+
+    cut_positions = []
+    for marker in markers:
+        pos = qlower.find(marker)
+        if pos > 0:
+            cut_positions.append(pos)
+
+    if cut_positions:
+        query = query[:min(cut_positions)].strip()
+
+    query = " ".join(query.split()).strip(" .,!?:;")
+
+    if not query:
+        query = message
+
+    if any(word in lower for word in youtube_words):
+        result = search_engine.youtube_search(
+            query,
+            max_results=5
+        )
+    else:
+        result = search_engine.web_search(
+            query,
+            max_results=5
+        )
+
+    results = result.get("results") or []
+
+    context_lines = [
+        "REAL SEARCH GROUNDING RESULTS:",
+        f"Query: {query}",
+    ]
+
+    for index, item in enumerate(results, 1):
+        context_lines.append(
+            f"{index}. Title: {item.get('title', '')}"
+        )
+        context_lines.append(
+            f"   URL: {item.get('url', '')}"
+        )
+
+        if item.get("snippet"):
+            context_lines.append(
+                f"   Snippet: {item.get('snippet', '')}"
+            )
+
+        if item.get("channel"):
+            context_lines.append(
+                f"   Channel: {item.get('channel', '')}"
+            )
+
+        if item.get("duration"):
+            context_lines.append(
+                f"   Duration: {item.get('duration', '')}"
+            )
+
+    return {
+        "used": True,
+        "type": result.get("type", "web"),
+        "query": query,
+        "results": results,
+        "context": "\n".join(context_lines),
+    }
+
+def build_advanced_contents(history, message):
+    return modular_build_contents(
+        history,
+        message
+    )
+
+
+def extract_calculation_expression(message):
+    """Extract a simple arithmetic expression from a calculator request."""
+    text = (message or "").strip()
+
+    prefixes = (
+        "calculate",
+        "calculator",
+        "solve",
+        "what is",
+        "what's",
+        "how much is",
+    )
+
+    lower = text.lower()
+
+    for prefix in prefixes:
+        if lower.startswith(prefix):
+            text = text[len(prefix):].strip(" :?=")
+            break
+
+    return text.strip(" ?")
 
 
 
@@ -254,22 +294,33 @@ def chat_stream():
             "error": "AI API key is not configured"
         }), 500
 
+    # LATENCY DEBUG
+    import time as _latency_time
+    _latency_start = _latency_time.perf_counter()
+
+    # Advanced Smart Router
+    route = smart_router.route(message)
+    print(f"[LATENCY] router={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
+
     now = datetime.now(timezone.utc).isoformat()
 
-    with memory_lock:
-        user_chats = conversations.get(client_id, {})
+    saved_chat = modular_memory.get_chat(
+        client_id,
+        chat_id
+    )
+    print(f"[LATENCY] memory={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
 
-        if not isinstance(user_chats, dict):
-            user_chats = {}
-
-        saved_chat = user_chats.get(chat_id, [])
-
-        if isinstance(saved_chat, dict):
-            history = list(saved_chat.get("messages", []))
-        elif isinstance(saved_chat, list):
-            history = list(saved_chat)
-        else:
-            history = []
+    if isinstance(saved_chat, dict):
+        history = list(
+            saved_chat.get(
+                "messages",
+                []
+            )
+        )
+    elif isinstance(saved_chat, list):
+        history = list(saved_chat)
+    else:
+        history = []
 
     history = history[-MAX_HISTORY:]
     contents = build_advanced_contents(history, message)
@@ -293,6 +344,36 @@ def chat_stream():
 
     contents.insert(0, language_instruction)
 
+    # Perform real web/YouTube search when requested.
+    search_data = build_search_context(message)
+    print(f"[LATENCY] search={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
+
+    if search_data.get("used") and search_data.get("context"):
+        contents.append({
+            "role": "user",
+            "parts": [{
+                "text": (
+                    "REAL SEARCH GROUNDING RULE: The information below was retrieved "
+                    "from an external search at request time. Treat these results "
+                    "as the primary factual source for the user’s current/latest "
+                    "search request. Do NOT rely on internal knowledge when the "
+                    "search results contain the answer. Carefully read the retrieved "
+                    "results before answering. If the results do not establish an "
+                    "answer, say so instead of guessing. NEVER invent, guess, modify, "
+                    "autocomplete, or fabricate URLs, domains, video IDs, titles, "
+                    "channels, dates, versions, prices, or other factual details. "
+                    "For YouTube requests, ONLY use exact video URLs that appear in "
+                    "REAL YOUTUBE SEARCH RESULTS below. For web requests asking "
+                    "for a source/link, return the exact URL from the retrieved "
+                    "results. For latest/current/today questions, prefer the newest "
+                    "dated information present in the retrieved results and do not "
+                    "substitute an older answer from memory. If multiple results "
+                    "disagree, clearly state the difference instead of guessing.\n\n"
+                    + search_data["context"]
+                )
+            }]
+        })
+
     payload = {
         "contents": contents,
         "generationConfig": {
@@ -305,57 +386,11 @@ def chat_stream():
         selected_model = None
 
         try:
-            response = None
-
-            # Try the primary model first, then automatically fall back
-            # to the next models when the provider returns an error such
-            # as 429 quota exceeded or 5xx temporary failure.
-            for model in GEMINI_MODELS:
-                url = (
-                    GEMINI_BASE_URL
-                    + model
-                    + ":streamGenerateContent"
-                )
-
-                try:
-                    candidate_response = requests.post(
-                        url,
-                        params={
-                            "key": api_key,
-                            "alt": "sse"
-                        },
-                        json=payload,
-                        timeout=60,
-                        stream=True
-                    )
-
-                    if candidate_response.ok:
-                        response = candidate_response
-                        selected_model = model
-                        break
-
-                    status = candidate_response.status_code
-                    candidate_response.close()
-
-                    # Try the next model for quota/provider errors.
-                    if status in (429, 500, 502, 503, 504):
-                        continue
-
-                    # For other errors, stop immediately.
-                    details = candidate_response.text[:1000]
-
-                    yield json.dumps({
-                        "type": "error",
-                        "message": (
-                            "Could not connect to AI provider "
-                            f"({status})"
-                        ),
-                        "details": details
-                    }, ensure_ascii=False) + "\n"
-                    return
-
-                except requests.RequestException:
-                    continue
+            response, selected_model = modular_stream_gemini(
+                payload,
+                api_key,
+                timeout=60
+            )
 
             if response is None:
                 yield json.dumps({
@@ -433,50 +468,45 @@ def chat_stream():
 
             # Save the completed conversation exactly once.
             # Include the current user message and completed AI reply.
-            with memory_lock:
-                if client_id not in conversations:
-                    conversations[client_id] = {}
+            updated_history = (
+                history.copy()
+                if isinstance(history, list)
+                else []
+            )
 
-                if not isinstance(
-                    conversations[client_id],
-                    dict
-                ):
-                    conversations[client_id] = {}
+            updated_history.append({
+                "role": "user",
+                "parts": [{"text": message}]
+            })
 
-                updated_history = (
-                    history.copy()
-                    if isinstance(history, list)
-                    else []
+            updated_history.append({
+                "role": "model",
+                "parts": [{"text": final_reply}]
+            })
+
+            updated_history = updated_history[-MAX_HISTORY:]
+
+            existing_chat = modular_memory.get_chat(
+                client_id,
+                chat_id
+            )
+
+            if isinstance(existing_chat, dict):
+                created_at = existing_chat.get(
+                    "created_at",
+                    now
                 )
+            else:
+                created_at = now
 
-                updated_history.append({
-                    "role": "user",
-                    "parts": [{"text": message}]
-                })
+            modular_memory.save_chat(
+                client_id,
+                chat_id,
+                updated_history,
+                created_at,
+                now
+            )
 
-                updated_history.append({
-                    "role": "model",
-                    "parts": [{"text": final_reply}]
-                })
-
-                updated_history = updated_history[-MAX_HISTORY:]
-
-                conversations[client_id][chat_id] = {
-                    "messages": updated_history,
-                    "created_at": (
-                        conversations[client_id]
-                        .get(chat_id, {})
-                        .get("created_at", now)
-                        if isinstance(
-                            conversations[client_id].get(chat_id),
-                            dict
-                        )
-                        else now
-                    ),
-                    "updated_at": now
-                }
-
-                save_memory()
 
             # Send exactly one completion signal after memory is saved.
             yield json.dumps({
@@ -538,33 +568,27 @@ def chat():
             "error": "AI API key is not configured"
         }), 500
 
+    # Advanced Smart Router
+    route = smart_router.route(message)
+
     now = datetime.now(timezone.utc).isoformat()
 
-    with memory_lock:
-        user_chats = conversations.get(
-            client_id,
-            {}
-        )
+    saved_chat = modular_memory.get_chat(
+        client_id,
+        chat_id
+    )
 
-        if not isinstance(user_chats, dict):
-            user_chats = {}
-
-        saved_chat = user_chats.get(
-            chat_id,
-            []
-        )
-
-        if isinstance(saved_chat, dict):
-            history = list(
-                saved_chat.get(
-                    "messages",
-                    []
-                )
+    if isinstance(saved_chat, dict):
+        history = list(
+            saved_chat.get(
+                "messages",
+                []
             )
-        elif isinstance(saved_chat, list):
-            history = list(saved_chat)
-        else:
-            history = []
+        )
+    elif isinstance(saved_chat, list):
+        history = list(saved_chat)
+    else:
+        history = []
 
     # Keep only the recent conversation context.
     history = history[-MAX_HISTORY:]
@@ -573,6 +597,97 @@ def chat():
         history,
         message
     )
+    print(f"[LATENCY] contents={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
+
+    # Smart Router context for the AI brain.
+    contents.append({
+        "role": "user",
+        "parts": [{
+            "text": (
+                "SMART ROUTER DECISION: "
+                f"intent={route.intent}; "
+                f"confidence={route.confidence:.2f}; "
+                f"reason={route.reason}. "
+                "Use this routing decision to guide how you answer. "
+                "Do not mention internal routing details unless the user asks."
+            )
+        }]
+    })
+
+    # Perform real web/YouTube search when requested.
+    search_data = build_search_context(message)
+
+    if search_data.get("used") and search_data.get("context"):
+        contents.append({
+            "role": "user",
+            "parts": [{
+                "text": (
+                    "REAL SEARCH GROUNDING RULE: The information below was retrieved "
+                    "from an external search at request time. Treat these results "
+                    "as the primary factual source for the user’s current/latest "
+                    "search request. Do NOT rely on internal knowledge when the "
+                    "search results contain the answer. Carefully read the retrieved "
+                    "results before answering. If the results do not establish an "
+                    "answer, say so instead of guessing. NEVER invent, guess, modify, "
+                    "autocomplete, or fabricate URLs, domains, video IDs, titles, "
+                    "channels, dates, versions, prices, or other factual details. "
+                    "For YouTube requests, ONLY use exact video URLs that appear in "
+                    "REAL YOUTUBE SEARCH RESULTS below. For web requests asking "
+                    "for a source/link, return the exact URL from the retrieved "
+                    "results. For latest/current/today questions, prefer the newest "
+                    "dated information present in the retrieved results and do not "
+                    "substitute an older answer from memory. If multiple results "
+                    "disagree, clearly state the difference instead of guessing.\n\n"
+                    + search_data["context"]
+                )
+            }]
+        })
+
+    # Execute calculator requests directly through the safe tool.
+    if route.intent == "CALCULATOR":
+        try:
+            expression = extract_calculation_expression(message)
+            result = tool_manager.execute(
+                "calculator",
+                expression=expression
+            )
+
+            reply = f"Result: {result}"
+
+            history.append({
+                "role": "user",
+                "content": message,
+                "timestamp": now
+            })
+
+            history.append({
+                "role": "assistant",
+                "content": reply,
+                "timestamp": now
+            })
+
+            modular_memory.save_chat(
+                client_id,
+                chat_id,
+                history,
+                now,
+                now
+            )
+
+            return jsonify({
+                "reply": reply,
+                "chat_id": chat_id,
+                "agent": True,
+                "memory": True,
+                "tool": "calculator",
+                "updated_at": now
+            })
+
+        except Exception as exc:
+            return jsonify({
+                "error": "Calculation failed",
+                "details": str(exc)
+            }), 400
 
     # Start with a normal Gemini request.
     # Web search will be added separately after the
@@ -585,11 +700,15 @@ def chat():
     }
 
     try:
+        print(f"[LATENCY] before_gemini={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
+
         response = call_gemini_with_retry(
             payload,
             api_key,
             timeout=45
         )
+
+        print(f"[LATENCY] after_gemini={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
 
         if not response.ok:
             details = response.text[:1000]
@@ -679,40 +798,26 @@ def chat():
 
         history = history[-MAX_HISTORY:]
 
-        with memory_lock:
-            if client_id not in conversations:
-                conversations[client_id] = {}
+        existing_chat = modular_memory.get_chat(
+            client_id,
+            chat_id
+        )
 
-            if not isinstance(
-                conversations[client_id],
-                dict
-            ):
-                conversations[client_id] = {}
-
-            existing = conversations[
-                client_id
-            ].get(
-                chat_id,
-                {}
+        if isinstance(existing_chat, dict):
+            created_at = existing_chat.get(
+                "created_at",
+                now
             )
+        else:
+            created_at = now
 
-            if isinstance(existing, dict):
-                created_at = existing.get(
-                    "created_at",
-                    now
-                )
-            else:
-                created_at = now
-
-            conversations[
-                client_id
-            ][chat_id] = {
-                "messages": history,
-                "created_at": created_at,
-                "updated_at": now
-            }
-
-            save_memory()
+        modular_memory.save_chat(
+            client_id,
+            chat_id,
+            history,
+            created_at,
+            now
+        )
 
         # Extract grounding metadata when Gemini provides it.
         grounding = result.get(
@@ -780,61 +885,70 @@ def file_chat():
     try:
         file_bytes = uploaded.read()
 
-        if not file_bytes:
-            return jsonify({
-                "error": "File is empty"
-            }), 400
-
         filename = uploaded.filename or "file"
-        mime_type = uploaded.mimetype or "text/plain"
 
-        text_extensions = (
-            ".txt", ".csv", ".json", ".md",
-            ".xml", ".html", ".css", ".js",
-            ".java", ".py", ".kt", ".log"
+        file_result = multimodal.read_text_bytes(
+            file_bytes,
+            filename,
+            max_chars=120000
         )
 
-        lower_name = filename.lower()
-
-        if lower_name.endswith(text_extensions):
-            content = file_bytes.decode(
-                "utf-8",
-                errors="replace"
+        if not file_result.get("success"):
+            message = file_result.get(
+                "message",
+                "Could not read file"
             )
 
-            content = content[:120000]
+            if not file_bytes:
+                return jsonify({
+                    "error": "File is empty"
+                }), 400
 
-            prompt = (
-                message
-                + "\n\nFilename: "
-                + filename
-                + "\n\nFile contents:\n"
-                + content
-            )
+            if message.startswith(
+                "Unsupported text file type:"
+            ):
+                return jsonify({
+                    "error": "This file type is not supported yet",
+                    "filename": filename,
+                    "supported": [
+                        "TXT", "CSV", "JSON", "MD",
+                        "XML", "HTML", "CSS", "JS",
+                        "JAVA", "PY", "KT", "LOG"
+                    ]
+                }), 415
 
-            payload = {
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ]
-            }
-
-        else:
             return jsonify({
-                "error": "This file type is not supported yet",
-                "filename": filename,
-                "supported": [
-                    "TXT", "CSV", "JSON", "MD",
-                    "XML", "HTML", "CSS", "JS",
-                    "JAVA", "PY", "KT", "LOG"
-                ]
-            }), 415
+                "error": message
+            }), 400
+
+        content = file_result["content"]
+
+        prompt = (
+            message
+            + "\n\nFilename: "
+            + filename
+            + "\n\nFile contents:\n"
+            + content
+        )
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
+        }
+
+        response = modular_call_gemini(
+            payload,
+            api_key,
+            timeout=45
+        )
 
         response = call_gemini_with_retry(
             payload,
@@ -914,9 +1028,22 @@ def image_chat():
                 "error": "Image is empty"
             }), 400
 
-        mime_type = (
-            image.mimetype or "image/jpeg"
+        filename = image.filename or "image"
+        mime_type = image.mimetype or "image/jpeg"
+
+        image_result = multimodal.encode_image_bytes(
+            image_bytes,
+            filename=filename,
+            mime_type=mime_type
         )
+
+        if not image_result.get("success"):
+            return jsonify({
+                "error": image_result.get(
+                    "message",
+                    "Could not process image"
+                )
+            }), 400
 
         payload = {
             "contents": [
@@ -928,10 +1055,8 @@ def image_chat():
                         },
                         {
                             "inline_data": {
-                                "mime_type": mime_type,
-                                "data": __import__("base64").b64encode(
-                                    image_bytes
-                                ).decode("ascii")
+                                "mime_type": image_result["mime_type"],
+                                "data": image_result["data"]
                             }
                         }
                     ]
@@ -939,7 +1064,7 @@ def image_chat():
             ]
         }
 
-        response = call_gemini_with_retry(
+        response = modular_call_gemini(
             payload,
             api_key,
             timeout=30
@@ -986,65 +1111,10 @@ def list_chats():
             "error": "client_id is required"
         }), 400
 
-    with memory_lock:
-        user_chats = conversations.get(
-            client_id,
-            {}
-        )
-
-        if not isinstance(user_chats, dict):
-            user_chats = {}
-
-        result = []
-
-        for chat_id, chat_data in user_chats.items():
-            if isinstance(chat_data, dict):
-                history = chat_data.get("messages", [])
-                created_at = chat_data.get("created_at", "")
-                updated_at = chat_data.get("updated_at", "")
-            else:
-                history = chat_data
-                created_at = ""
-                updated_at = ""
-
-            if not isinstance(history, list):
-                history = []
-
-            title = "New Chat"
-
-            for item in history:
-                if item.get("role") == "user":
-                    parts = item.get("parts", [])
-
-                    if parts and isinstance(
-                            parts[0],
-                            dict
-                    ):
-                        text = str(
-                            parts[0].get(
-                                "text",
-                                ""
-                            )
-                        ).strip()
-
-                        if text:
-                            title = text[:40]
-
-                            if len(text) > 40:
-                                title += "..."
-
-                            break
-
-            result.append({
-                "chat_id": chat_id,
-                "title": title,
-                "messages": len(history),
-                "created_at": created_at,
-                "updated_at": updated_at
-            })
+    chats = modular_memory.list_chats(client_id)
 
     return jsonify({
-        "chats": result
+        "chats": chats
     })
 
 
@@ -1061,44 +1131,21 @@ def get_chat(chat_id):
             "error": "client_id is required"
         }), 400
 
-    with memory_lock:
-        user_chats = conversations.get(
-            client_id,
-            {}
-        )
+    chat_data = modular_memory.get_chat(
+        client_id,
+        chat_id
+    )
 
-        if not isinstance(user_chats, dict):
-            user_chats = {}
-
-        chat_data = user_chats.get(chat_id, {})
-
-        if isinstance(chat_data, dict):
-            history = list(
-                chat_data.get("messages", [])
-            )
-            created_at = chat_data.get(
-                "created_at",
-                ""
-            )
-            updated_at = chat_data.get(
-                "updated_at",
-                ""
-            )
-        else:
-            history = list(chat_data)
-            created_at = ""
-            updated_at = ""
-
-    if not history:
+    if not chat_data:
         return jsonify({
             "error": "Chat not found"
         }), 404
 
     return jsonify({
         "chat_id": chat_id,
-        "messages": history,
-        "created_at": created_at,
-        "updated_at": updated_at
+        "messages": chat_data.get("messages", []),
+        "created_at": chat_data.get("created_at", ""),
+        "updated_at": chat_data.get("updated_at", "")
     })
 
 
@@ -1115,28 +1162,15 @@ def delete_chat(chat_id):
             "error": "client_id is required"
         }), 400
 
-    with memory_lock:
-        user_chats = conversations.get(
-            client_id,
-            {}
-        )
+    deleted = modular_memory.delete_chat(
+        client_id,
+        chat_id
+    )
 
-        if not isinstance(user_chats, dict):
-            user_chats = {}
-
-        if chat_id not in user_chats:
-            return jsonify({
-                "error": "Chat not found"
-            }), 404
-
-        user_chats.pop(chat_id, None)
-
-        if user_chats:
-            conversations[client_id] = user_chats
-        else:
-            conversations.pop(client_id, None)
-
-        save_memory()
+    if not deleted:
+        return jsonify({
+            "error": "Chat not found"
+        }), 404
 
     return jsonify({
         "success": True,
@@ -1166,24 +1200,10 @@ def clear_chat():
             "error": "chat_id is required"
         }), 400
 
-    with memory_lock:
-        user_chats = conversations.get(
-            client_id,
-            {}
-        )
-
-        if not isinstance(user_chats, dict):
-            user_chats = {}
-
-        # Only clear the currently active chat.
-        user_chats.pop(chat_id, None)
-
-        if user_chats:
-            conversations[client_id] = user_chats
-        else:
-            conversations.pop(client_id, None)
-
-        save_memory()
+    modular_memory.clear_chat(
+        client_id,
+        chat_id
+    )
 
     return jsonify({
         "success": True,
@@ -1195,6 +1215,6 @@ def clear_chat():
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=8081,
+        port=8080,
         debug=False
     )

@@ -74,45 +74,10 @@ Rules:
 10. Answer naturally and professionally.
 """
 
-# Persistent conversation memory.
-# Each client gets its own conversation.
-MEMORY_FILE = "backend/conversations.json"
-conversations = {}
-memory_lock = threading.Lock()
+# Modular persistent conversation memory.
+MEMORY_FILE = MODULAR_MEMORY_FILE
+MAX_HISTORY = MODULAR_MAX_HISTORY
 
-MAX_HISTORY = 12
-
-
-def load_memory():
-    global conversations
-
-    try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        if isinstance(data, dict):
-            conversations = data
-        else:
-            conversations = {}
-
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        conversations = {}
-
-
-def save_memory():
-    try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(
-                conversations,
-                f,
-                ensure_ascii=False,
-                indent=2
-            )
-    except OSError:
-        pass
-
-
-load_memory()
 
 
 @app.get("/")
@@ -1112,6 +1077,6 @@ def clear_chat():
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=8081,
+        port=8080,
         debug=False
     )
