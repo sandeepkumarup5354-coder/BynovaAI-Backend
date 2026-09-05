@@ -536,6 +536,8 @@ def chat_stream():
 
 @app.post("/chat")
 def chat():
+    _latency_start = _latency_time.perf_counter()
+
     data = request.get_json(silent=True) or {}
 
     message = str(
