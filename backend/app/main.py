@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, Response
 
+import re
 # Modular BynovaAI components
 from app.core.config import (
     GEMINI_MODEL as MODULAR_GEMINI_MODEL,
@@ -153,10 +154,29 @@ def build_search_context(message):
 
     qlower = query.lower()
 
-    for prefix in prefixes:
+    # Handle natural-language live-search requests such as:
+    # "Do a live web search right now. Find ..."
+    live_search_prefixes = (
+        "do a live web search right now. find",
+        "do a live web search right now, find",
+        "do a live web search. find",
+        "do a web search right now. find",
+        "do a live search right now. find",
+    )
+
+    matched_live_prefix = False
+
+    for prefix in live_search_prefixes:
         if qlower.startswith(prefix):
             query = query[len(prefix):].strip()
+            matched_live_prefix = True
             break
+
+    if not matched_live_prefix:
+        for prefix in prefixes:
+            if qlower.startswith(prefix):
+                query = query[len(prefix):].strip()
+                break
 
     # Remove everything after common answer-request markers.
     markers = (
@@ -168,6 +188,11 @@ def build_search_context(message):
         " with the link",
         " with link",
         " source link",
+        ". give exactly",
+        ". give me exactly",
+        ". give me",
+        ". provide exactly",
+        ". provide me",
     )
 
     qlower = query.lower()
@@ -192,15 +217,154 @@ def build_search_context(message):
             max_results=5
         )
     else:
-        result = search_engine.web_search(
-            query,
-            max_results=5
+        is_news_query = any(
+            word in lower
+            for word in (
+                "news", "latest", "today", "current",
+                "आज", "खबर", "खबरें", "समाचार",
+                "ताज़ा", "ताजा", "न्यूज़", "न्यूज"
+            )
         )
 
+        if is_news_query:
+            news_query = query
+
+            # Normalize Hindi/Hinglish natural-language news requests
+            # into a concise Google News query.
+            news_query = re.sub(
+                r"(बताओ|बताइए|बताइये|बताएं|बताओ।|बताइए।|बताइये।)",
+                " ",
+                news_query,
+                flags=re.IGNORECASE
+            )
+
+            news_query = re.sub(
+                r"(हर खबर के साथ|हर खबर में|source/publisher|source|publisher|published time|published|link|लिंक)",
+                " ",
+                news_query,
+                flags=re.IGNORECASE
+            )
+
+            news_query = " ".join(news_query.split()).strip(" .,!?:;")
+
+            # Add today's date for current/latest searches so the
+            # news provider prioritizes fresh articles.
+            if (
+                "today" in lower
+                or "latest" in lower
+                or "current" in lower
+                or "आज" in lower
+                or "ताज़ा" in lower
+                or "ताजा" in lower
+                or "न्यूज़" in lower
+                or "न्यूज" in lower
+            ):
+                news_query = (
+                    f"{news_query} "
+                    f"{datetime.now(timezone.utc).strftime('%B %-d %Y')}"
+                )
+
+            result = search_engine.google_news_search(
+                news_query,
+                max_results=10
+            )
+
+            # Remove routine/noisy stories from broad "latest major news"
+            # requests while keeping important national/current events.
+            if result.get("results"):
+                noise_words = (
+                    "petrol price", "diesel price",
+                    "petrol-diesel", "fuel price",
+                    "horoscope", "astrology", "zodiac",
+                    "lottery", "redeem code",
+                    "weather forecast", "daily horoscope",
+                    "gold rate", "silver rate",
+                    "share market prediction",
+                    "today's horoscope",
+                )
+
+                filtered_results = []
+                current_year = datetime.now(timezone.utc).year
+
+                for item in result.get("results", []):
+                    title = (item.get("title") or "").lower()
+
+                    # Skip known routine/noisy topics.
+                    if any(word in title for word in noise_words):
+                        continue
+
+                    # For "latest/current/today" requests, reject headlines
+                    # containing an explicitly old full date.
+                    month_map = {
+                        "january": 1, "february": 2, "march": 3,
+                        "april": 4, "may": 5, "june": 6,
+                        "july": 7, "august": 8, "september": 9,
+                        "october": 10, "november": 11, "december": 12,
+                        "जनवरी": 1, "फरवरी": 2, "मार्च": 3,
+                        "अप्रैल": 4, "मई": 5, "जून": 6,
+                        "जुलाई": 7, "अगस्त": 8, "सितंबर": 9,
+                        "सितम्बर": 9, "अक्टूबर": 10, "नवंबर": 11,
+                        "नवम्बर": 11, "दिसंबर": 12, "दिसम्बर": 12,
+                    }
+
+                    full_date_old = False
+
+                    date_match = re.search(
+                        r"\b(\d{1,2})[\s-]+([A-Za-z]+|[\u0900-\u097F]+)[,\s-]+(20\d{2})\b",
+                        title,
+                        flags=re.IGNORECASE
+                    )
+
+                    if date_match:
+                        day = int(date_match.group(1))
+                        month_name = date_match.group(2).lower()
+                        year = int(date_match.group(3))
+                        month = month_map.get(month_name)
+
+                        if month:
+                            headline_date = datetime(
+                                year, month, day,
+                                tzinfo=timezone.utc
+                            ).date()
+                            if headline_date < datetime.now(timezone.utc).date():
+                                full_date_old = True
+
+                    # Also reject an explicitly old year when no full date
+                    # is present.
+                    old_year = re.search(r"\b(20\d{2})\b", title)
+                    if (
+                        not full_date_old
+                        and old_year
+                        and int(old_year.group(1)) < current_year
+                    ):
+                        full_date_old = True
+
+                    if full_date_old:
+                        continue
+
+                    filtered_results.append(item)
+
+                result["results"] = filtered_results[:5]
+
+            # If Google News has no results, fall back to normal web search.
+            if not result.get("results"):
+                result = search_engine.web_search(
+                    query,
+                    max_results=5
+                )
+        else:
+            result = search_engine.web_search(
+                query,
+                max_results=5
+            )
     results = result.get("results") or []
+
+    current_utc = datetime.now(timezone.utc).isoformat()
 
     context_lines = [
         "REAL SEARCH GROUNDING RESULTS:",
+        f"Search retrieval time (UTC): {current_utc}",
+        "IMPORTANT: The retrieval timestamp above is authoritative for the current date/time.",
         f"Query: {query}",
     ]
 
@@ -211,6 +375,16 @@ def build_search_context(message):
         context_lines.append(
             f"   URL: {item.get('url', '')}"
         )
+
+        if item.get("source"):
+            context_lines.append(
+                f"   Source/Publisher: {item.get('source', '')}"
+            )
+
+        if item.get("published_at"):
+            context_lines.append(
+                f"   Published: {item.get('published_at', '')}"
+            )
 
         if item.get("snippet"):
             context_lines.append(
@@ -361,6 +535,13 @@ def chat_stream():
                     "results before answering. If the results do not establish an "
                     "answer, say so instead of guessing. NEVER invent, guess, modify, "
                     "autocomplete, or fabricate URLs, domains, video IDs, titles, "
+                    "For NEWS requests, NEVER create a URL yourself. A news/source "
+                    "URL MUST be copied exactly from the REAL SEARCH GROUNDING RESULTS. "
+                    "NEVER use news.google.com URLs or Google News redirect URLs. "
+                    "NEVER replace a retrieved article URL with a publisher homepage, "
+                    "category, section, topic, search page, favicon, image, or other "
+                    "generic URL. If no suitable direct article URL exists, say that "
+                    "a direct article link was not found instead of generating one. "
                     "channels, dates, versions, prices, or other factual details. "
                     "For YouTube requests, ONLY use exact video URLs that appear in "
                     "REAL YOUTUBE SEARCH RESULTS below. For web requests asking "

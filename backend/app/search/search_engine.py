@@ -201,6 +201,388 @@ class SearchEngine:
                 "message": f"Web search parser failed: {exc}",
             }
 
+
+    def _resolve_google_news_url(
+        self,
+        url: str,
+        title: str = "",
+        source: str = "",
+    ) -> str:
+        """Resolve Google News article URL to the original publisher URL."""
+
+        try:
+            import re
+            import base64
+            import requests
+            from urllib.parse import urlparse, parse_qs, unquote
+
+            if not url or "news.google.com" not in url:
+                return url
+
+            # Try Google's encoded article payload first.
+            m = re.search(r"/rss/articles/([^?]+)", url)
+
+            if m:
+                token = m.group(1)
+
+                # Google News article tokens are often URL-safe base64.
+                try:
+                    padded = token + "=" * (-len(token) % 4)
+                    raw = base64.urlsafe_b64decode(padded)
+
+                    text = raw.decode("utf-8", errors="ignore")
+
+                    urls = re.findall(
+                        r'https?://[A-Za-z0-9./?%&_=:#@+\-~]+',
+                        text,
+                    )
+
+                    for candidate in urls:
+                        candidate = unquote(candidate)
+                        host = urlparse(candidate).netloc.lower()
+
+                        if (
+                            host
+                            and "google.com" not in host
+                            and "googleusercontent.com" not in host
+                            and "gstatic.com" not in host
+                        ):
+                            return candidate.rstrip(".,;\"'")
+
+                except Exception:
+                    pass
+
+            # Try Google's redirect endpoint.
+            try:
+                r = requests.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Linux; Android 15) "
+                            "AppleWebKit/537.36 "
+                            "Chrome/140.0 Mobile Safari/537.36"
+                        )
+                    },
+                    timeout=10,
+                    allow_redirects=True,
+                )
+
+                final_url = r.url
+                host = urlparse(final_url).netloc.lower()
+
+                if (
+                    host
+                    and "news.google.com" not in host
+                    and "google.com" not in host
+                ):
+                    return final_url
+
+            except Exception:
+                pass
+
+            # Last safe fallback: search publisher site by exact title.
+            try:
+                publisher_domains = {
+                    "ndtv": "ndtv.com",
+                    "the times of india": "timesofindia.indiatimes.com",
+                    "times of india": "timesofindia.indiatimes.com",
+                    "the hindu": "thehindu.com",
+                    "hindustan times": "hindustantimes.com",
+                    "india today": "indiatoday.in",
+                    "the indian express": "indianexpress.com",
+                    "indian express": "indianexpress.com",
+                    "deccan herald": "deccanherald.com",
+                    "economic times": "economictimes.indiatimes.com",
+                    "business standard": "business-standard.com",
+                    "news18": "news18.com",
+                    "firstpost": "firstpost.com",
+                    "times now": "timesnownews.com",
+                    "moneycontrol": "moneycontrol.com",
+                    "livemint": "livemint.com",
+                }
+
+                source_lower = (source or "").lower()
+                domain = None
+
+                for name, d in publisher_domains.items():
+                    if name in source_lower:
+                        domain = d
+                        break
+
+                if domain and title:
+                    from urllib.parse import quote
+
+                    q = quote(f'site:{domain} "{title}"')
+                    search_url = f"https://www.google.com/search?q={q}"
+
+                    rr = requests.get(
+                        search_url,
+                        headers={
+                            "User-Agent": (
+                                "Mozilla/5.0 (Linux; Android 15) "
+                                "AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36"
+                            )
+                        },
+                        timeout=10,
+                    )
+
+                    matches = re.findall(
+                        r'https?://[^"<> ]+',
+                        rr.text,
+                    )
+
+                    for candidate in matches:
+                        candidate = unquote(candidate)
+                        host = urlparse(candidate).netloc.lower()
+
+                        if domain in host and "google.com" not in host:
+                            return candidate
+
+            except Exception:
+                pass
+
+            return url
+
+        except Exception:
+            return url
+
+    def google_news_search(
+        self,
+        query: str,
+        max_results: int = 10,
+    ) -> dict:
+        """Find direct article URLs from known news publishers."""
+
+        try:
+            import re
+            import requests
+            from urllib.parse import urljoin, urlparse
+
+            publisher_domains = [
+                "ndtv.com",
+                "timesofindia.indiatimes.com",
+                "thehindu.com",
+                "hindustantimes.com",
+                "indiatoday.in",
+                "indianexpress.com",
+                "deccanherald.com",
+                "economictimes.indiatimes.com",
+                "business-standard.com",
+                "news18.com",
+                "firstpost.com",
+                "timesnownews.com",
+                "moneycontrol.com",
+                "livemint.com",
+            ]
+
+            if not query.strip():
+                return {
+                    "success": False,
+                    "results": [],
+                    "count": 0,
+                    "error": "Search query is empty",
+                }
+
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Linux; Android 15) "
+                    "AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36"
+                ),
+                "Accept-Language": "en-IN,en;q=0.9",
+            }
+
+            base = self.web_search(
+                query.strip(),
+                max(max_results * 4, 20),
+            )
+
+            if not base.get("success"):
+                return {
+                    "success": False,
+                    "results": [],
+                    "count": 0,
+                    "error": base.get("error"),
+                }
+
+            def words(text):
+                return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+            query_words = words(query)
+            candidates = []
+            seen = set()
+
+            for item in base.get("results", []):
+                page_url = (item.get("url") or "").strip()
+
+                if not page_url:
+                    continue
+
+                host = urlparse(page_url).netloc.lower()
+
+                if any(x in host for x in (
+                    "google.com",
+                    "news.google.com",
+                    "duckduckgo.com",
+                    "bing.com",
+                )):
+                    continue
+
+                domain = next(
+                    (d for d in publisher_domains if d in host),
+                    None,
+                )
+
+                if not domain:
+                    continue
+
+                try:
+                    response = requests.get(
+                        page_url,
+                        headers=headers,
+                        timeout=10,
+                    )
+
+                    if response.status_code != 200:
+                        continue
+
+                    html = response.text
+
+                    # Extract links without complicated quote nesting.
+                    links = re.findall(
+                        r'href=["\']([^"\']+)["\']',
+                        html,
+                        re.I,
+                    )
+
+                    for href in links:
+                        article_url = urljoin(page_url, href)
+                        parsed = urlparse(article_url)
+
+                        if parsed.scheme not in ("http", "https"):
+                            continue
+
+                        if domain not in parsed.netloc.lower():
+                            continue
+
+                        # Skip images, videos and static assets.
+                        if parsed.path.lower().endswith((
+                            ".jpg", ".jpeg", ".png", ".webp",
+                            ".gif", ".svg", ".mp4", ".webm",
+                            ".css", ".js", ".xml", ".json",
+                            ".ico", ".woff", ".woff2", ".ttf",
+                            ".eot", ".map",
+                        )):
+                            continue
+
+                        path = parsed.path.strip("/").lower()
+
+                        if not path:
+                            continue
+
+                        blocked = {
+                            "india",
+                            "india-news",
+                            "news",
+                            "latest",
+                            "latest-news",
+                            "world",
+                            "sports",
+                            "business",
+                            "entertainment",
+                        }
+
+                        if path in blocked:
+                            continue
+
+                        if any(x in path for x in (
+                            "/category/",
+                            "/tag/",
+                            "/author/",
+                        )):
+                            continue
+
+                        clean_url = (
+                            parsed.scheme
+                            + "://"
+                            + parsed.netloc
+                            + parsed.path
+                        )
+
+                        if clean_url in seen:
+                            continue
+
+                        # Look for text associated with this URL.
+                        pos = html.find(href)
+                        nearby = html[max(0, pos - 500):pos + 1000]
+
+                        text = re.sub(
+                            r"<[^>]+>",
+                            " ",
+                            nearby,
+                        )
+                        text = re.sub(r"\s+", " ", text).strip()
+
+                        candidate_words = words(text)
+
+                        if query_words:
+                            score = (
+                                len(query_words & candidate_words)
+                                / len(query_words)
+                            )
+                        else:
+                            score = 0.0
+
+                        # Article-looking URLs get a small preference.
+                        path_words = len(
+                            re.findall(r"[a-z0-9]+", path)
+                        )
+
+                        if path_words >= 5:
+                            score += 0.10
+
+                        if score >= 0.30:
+                            seen.add(clean_url)
+
+                            candidates.append({
+                                "title": (
+                                    item.get("title")
+                                    or query
+                                ),
+                                "url": clean_url,
+                                "source": domain,
+                                "description": "",
+                                "published": "",
+                                "_score": score,
+                            })
+
+                except Exception:
+                    continue
+
+            candidates.sort(
+                key=lambda x: x.get("_score", 0),
+                reverse=True,
+            )
+
+            results = candidates[:max_results]
+
+            for item in results:
+                item.pop("_score", None)
+
+            return {
+                "success": True,
+                "results": results,
+                "count": len(results),
+                "error": None,
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "results": [],
+                "count": 0,
+                "error": str(e),
+            }
+
     def youtube_search(
         self,
         query: str,
