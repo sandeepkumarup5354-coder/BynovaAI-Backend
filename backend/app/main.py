@@ -436,7 +436,11 @@ def extract_calculation_expression(message):
             text = text[len(prefix):].strip(" :?=")
             break
 
-    return text.strip(" ?")
+    # Remove natural-language instructions after the calculation.
+    if "?" in text:
+        text = text.split("?", 1)[0]
+
+    return text.strip()
 
 
 

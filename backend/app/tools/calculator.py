@@ -23,6 +23,30 @@ def calculate(expression: str):
     if len(expression) > 200:
         raise ValueError("Expression is too long.")
 
+    # Percentage expressions.
+    import re
+
+    percentage_of = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\s*(?:%|percent)\s+of\s+(\d+(?:\.\d+)?)",
+        expression,
+        re.IGNORECASE,
+    )
+
+    if percentage_of:
+        percent = float(percentage_of.group(1))
+        number = float(percentage_of.group(2))
+        result = (percent / 100) * number
+        return int(result) if result.is_integer() else result
+
+    percentage_add = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\s*%\s*\+\s*(\d+(?:\.\d+)?)\s*%",
+        expression,
+    )
+
+    if percentage_add:
+        result = float(percentage_add.group(1)) + float(percentage_add.group(2))
+        return int(result) if result.is_integer() else result
+
     tree = ast.parse(expression, mode="eval")
 
     def evaluate(node):

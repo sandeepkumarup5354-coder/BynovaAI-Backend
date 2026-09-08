@@ -88,7 +88,8 @@ class SmartRouter:
 
         # Calculations
         if (
-            re.search(r"\d+\s*[\+\-\*\/%]\s*\d+", text)
+            re.search(r"\d+(?:\.\d+)?\s*[\+\-\*\/%]\s*\d+(?:\.\d+)?", text)
+            or re.search(r"\d+(?:\.\d+)?\s*%", text)
             or any(x in text for x in (
                 "calculate",
                 "calculator",
