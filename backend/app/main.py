@@ -13,6 +13,10 @@ from app.core.gemini import (
     call_gemini_with_retry as modular_call_gemini,
     stream_gemini_with_fallback as modular_stream_gemini,
 )
+from app.core.openai_provider import (
+    call_openai,
+    extract_openai_text,
+)
 from app.memory.manager import memory as modular_memory
 from app.agents.bynova_agent import (
     AI_SYSTEM_PROMPT as MODULAR_AI_SYSTEM_PROMPT,
@@ -101,6 +105,30 @@ def call_gemini_with_retry(payload, api_key, timeout=45):
         timeout=timeout
     )
 
+
+
+def call_openai_fallback(message, history):
+    """
+    Use OpenAI as a fallback when Gemini cannot provide an answer.
+    """
+    try:
+        response = call_openai(
+            message,
+            history=history,
+            timeout=45,
+        )
+
+        if response is None or not response.ok:
+            return ""
+
+        return extract_openai_text(response)
+
+    except Exception as exc:
+        print(
+            f"[OPENAI FALLBACK ERROR] {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return ""
 
 
 def build_search_context(message):
@@ -840,27 +868,36 @@ def chat():
             )
 
             reply = f"Result: {result}"
-
             history.append({
                 "role": "user",
-                "content": message,
-                "timestamp": now
+                "parts": [{"text": message}]
             })
-
             history.append({
-                "role": "assistant",
-                "content": reply,
-                "timestamp": now
+                "role": "model",
+                "parts": [{"text": reply}]
             })
+            history = history[-MAX_HISTORY:]
+
+            existing_chat = modular_memory.get_chat(
+                client_id,
+                chat_id
+            )
+
+            if isinstance(existing_chat, dict):
+                created_at = existing_chat.get(
+                    "created_at",
+                    now
+                )
+            else:
+                created_at = now
 
             modular_memory.save_chat(
                 client_id,
                 chat_id,
                 history,
-                now,
+                created_at,
                 now
             )
-
             return jsonify({
                 "reply": reply,
                 "chat_id": chat_id,
@@ -897,21 +934,76 @@ def chat():
 
         print(f"[LATENCY] after_gemini={_latency_time.perf_counter() - _latency_start:.3f}s", flush=True)
 
-        if not response.ok:
-            details = response.text[:1000]
+        if response is None or not response.ok:
+            status = response.status_code if response is not None else 0
+            details = (
+                response.text[:1000]
+                if response is not None
+                else "Gemini unavailable"
+            )
 
-            # Friendly temporary provider error.
-            if response.status_code in (
-                429,
-                500,
-                502,
-                503,
-                504
-            ):
+            print(
+                f"[AI FALLBACK] Gemini failed status={status}; trying OpenAI",
+                flush=True,
+            )
+
+            openai_reply = call_openai_fallback(
+                message,
+                history,
+            )
+
+            if openai_reply:
+                reply = openai_reply
+
+                history.append({
+                    "role": "user",
+                    "parts": [{"text": message}]
+                })
+                history.append({
+                    "role": "model",
+                    "parts": [{"text": reply}]
+                })
+                history = history[-MAX_HISTORY:]
+
+                existing_chat = modular_memory.get_chat(
+                    client_id,
+                    chat_id
+                )
+
+                if isinstance(existing_chat, dict):
+                    created_at = existing_chat.get(
+                        "created_at",
+                        now
+                    )
+                else:
+                    created_at = now
+
+                modular_memory.save_chat(
+                    client_id,
+                    chat_id,
+                    history,
+                    created_at,
+                    now
+                )
+
+                return jsonify({
+                    "reply": reply,
+                    "chat_id": chat_id,
+                    "updated_at": now,
+                    "model": "openai:" + os.getenv(
+                        "OPENAI_MODEL",
+                        "gpt-5.6-luna"
+                    ),
+                    "agent": True,
+                    "memory": True,
+                    "provider": "openai"
+                })
+
+            if status in (429, 500, 502, 503, 504):
                 return jsonify({
                     "error": "AI is temporarily busy",
                     "message": "Please try again in a moment.",
-                    "provider_status": response.status_code
+                    "provider_status": status
                 }), 503
 
             return jsonify({

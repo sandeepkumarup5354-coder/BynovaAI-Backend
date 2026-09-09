@@ -18,13 +18,17 @@ GEMINI_MODEL = os.getenv(
 )
 
 GEMINI_MODELS = [
-    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
 ]
 
 GEMINI_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
 )
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+OPENAI_BASE_URL = "https://api.openai.com/v1/responses"
 
 MEMORY_FILE = os.path.join(
     BASE_DIR,
