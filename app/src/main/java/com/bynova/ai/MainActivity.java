@@ -1216,7 +1216,7 @@ public class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(dp(46), dp(46))
         );
 
-        menu.setOnClickListener(v -> showChatHistory());
+        menu.setOnClickListener(v -> showBynovaSidebar());
 
         newChat.setOnClickListener(v -> {
             clearConversation();
@@ -1454,6 +1454,201 @@ public class MainActivity extends Activity {
         input.requestFocus();
         restoreChatInputFocus();
         scrollChatToBottom();
+    }
+
+    void showBynovaSidebar() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(14), dp(18), dp(18));
+        root.setBackgroundColor(BG);
+
+        // Header
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView logo = text("B", 24, WHITE);
+        logo.setGravity(Gravity.CENTER);
+        logo.setTypeface(Typeface.DEFAULT_BOLD);
+        logo.setBackground(round(PRIMARY, 15));
+
+        header.addView(
+                logo,
+                new LinearLayout.LayoutParams(dp(46), dp(46))
+        );
+
+        LinearLayout brand = new LinearLayout(this);
+        brand.setOrientation(LinearLayout.VERTICAL);
+        brand.setPadding(dp(12), 0, 0, 0);
+
+        TextView brandTitle = text("Bynova AI", 20, WHITE);
+        brandTitle.setTypeface(Typeface.DEFAULT_BOLD);
+
+        TextView brandSub = text("AI Assistant", 11, MUTED);
+
+        brand.addView(brandTitle,
+                new LinearLayout.LayoutParams(-1, dp(25)));
+        brand.addView(brandSub,
+                new LinearLayout.LayoutParams(-1, dp(18)));
+
+        header.addView(
+                brand,
+                new LinearLayout.LayoutParams(0, dp(50), 1)
+        );
+
+        TextView close = text("×", 28, WHITE);
+        close.setGravity(Gravity.CENTER);
+        close.setBackground(round(CARD_2, 15));
+        close.setContentDescription("Close menu");
+
+        header.addView(
+                close,
+                new LinearLayout.LayoutParams(dp(46), dp(46))
+        );
+
+        close.setOnClickListener(v -> showHome());
+
+        root.addView(
+                header,
+                new LinearLayout.LayoutParams(-1, dp(58))
+        );
+
+        // New Chat
+        TextView newChat = text("＋   New Chat", 15, WHITE);
+        newChat.setTypeface(Typeface.DEFAULT_BOLD);
+        newChat.setGravity(Gravity.CENTER_VERTICAL);
+        newChat.setPadding(dp(16), 0, dp(16), 0);
+        newChat.setBackground(round(PRIMARY, 16));
+
+        LinearLayout.LayoutParams newChatParams =
+                new LinearLayout.LayoutParams(-1, dp(52));
+        newChatParams.setMargins(0, dp(18), 0, dp(12));
+
+        root.addView(newChat, newChatParams);
+
+        newChat.setOnClickListener(v -> {
+            clearConversation();
+            showHome();
+        });
+
+        // Section label
+        TextView toolsLabel = text("TOOLS", 11, MUTED);
+        toolsLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        toolsLabel.setPadding(dp(5), dp(8), 0, dp(6));
+
+        root.addView(
+                toolsLabel,
+                new LinearLayout.LayoutParams(-1, dp(30))
+        );
+
+        // Tools
+        String[] toolNames = {
+                "⌕   Web Search",
+                "▣   News",
+                "▶   YouTube",
+                "＋   Calculator",
+                "▧   Image",
+                "□   Files",
+                "🎙   Voice"
+        };
+
+        for (String name : toolNames) {
+            TextView tool = text(name, 15, WHITE);
+            tool.setGravity(Gravity.CENTER_VERTICAL);
+            tool.setPadding(dp(14), 0, dp(14), 0);
+            tool.setBackground(round(CARD, 14));
+
+            LinearLayout.LayoutParams toolParams =
+                    new LinearLayout.LayoutParams(-1, dp(48));
+            toolParams.setMargins(0, dp(3), 0, dp(3));
+
+            root.addView(tool, toolParams);
+
+            tool.setOnClickListener(v -> {
+                String selected = name;
+
+                if (selected.contains("Image")) {
+                    openImagePicker();
+
+                } else if (selected.contains("Voice")) {
+                    startVoiceInput();
+
+                } else if (selected.contains("Files")) {
+                    showFeatureUnavailable(
+                            "File analysis",
+                            "File analysis is not connected yet."
+                    );
+
+                } else if (selected.contains("Calculator")) {
+                    showHome();
+                    chatInput.requestFocus();
+                    chatInput.setText("Calculate ");
+
+                } else {
+                    showHome();
+                    Toast.makeText(
+                            MainActivity.this,
+                            selected.substring(selected.indexOf("   ") + 3)
+                                    + " selected",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                }
+            });
+        }
+
+        // Lower section
+        TextView historyLabel = text("APP", 11, MUTED);
+        historyLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        historyLabel.setPadding(dp(5), dp(14), 0, dp(6));
+
+        root.addView(
+                historyLabel,
+                new LinearLayout.LayoutParams(-1, dp(36))
+        );
+
+        TextView history = text("◷   Chat History", 15, WHITE);
+        history.setGravity(Gravity.CENTER_VERTICAL);
+        history.setPadding(dp(14), 0, dp(14), 0);
+        history.setBackground(round(CARD, 14));
+
+        root.addView(
+                history,
+                new LinearLayout.LayoutParams(-1, dp(48))
+        );
+
+        history.setOnClickListener(v -> showChatHistory());
+
+        TextView settings = text("⚙   Settings", 15, WHITE);
+        settings.setGravity(Gravity.CENTER_VERTICAL);
+        settings.setPadding(dp(14), 0, dp(14), 0);
+        settings.setBackground(round(CARD, 14));
+
+        LinearLayout.LayoutParams settingsParams =
+                new LinearLayout.LayoutParams(-1, dp(48));
+        settingsParams.setMargins(0, dp(6), 0, 0);
+
+        root.addView(settings, settingsParams);
+
+        settings.setOnClickListener(v ->
+                showFeatureUnavailable(
+                        "Settings",
+                        "Settings panel is being connected."
+                )
+        );
+
+        TextView about = text(
+                "Bynova AI\nCreated by Sandeep Kumar Bind",
+                11,
+                MUTED
+        );
+        about.setGravity(Gravity.CENTER);
+        about.setPadding(0, dp(18), 0, 0);
+
+        root.addView(
+                about,
+                new LinearLayout.LayoutParams(-1, 0, 1)
+        );
+
+        setContentView(root);
     }
 
     void showChatHistory() {
