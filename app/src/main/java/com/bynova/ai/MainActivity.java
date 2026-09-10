@@ -1164,37 +1164,51 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
 
-        // Top bar
+        // ===== Bynova AI Header =====
         LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(14), dp(10), dp(14), dp(8));
+        header.setPadding(dp(12), dp(8), dp(12), dp(8));
+        header.setBackgroundColor(BG);
 
-        TextView menu = text("☰", 24, WHITE);
+        TextView menu = text("☰", 23, WHITE);
         menu.setGravity(Gravity.CENTER);
-        menu.setBackground(round(CARD_2, 14));
+        menu.setBackground(round(CARD_2, 15));
+        menu.setContentDescription("Menu");
 
-        header.addView(
-                menu,
-                new LinearLayout.LayoutParams(dp(46), dp(46))
-        );
+        LinearLayout.LayoutParams menuParams =
+                new LinearLayout.LayoutParams(dp(46), dp(46));
+        header.addView(menu, menuParams);
 
-        TextView title = text(
-                "Bynova AI",
-                20,
-                WHITE
-        );
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        titleBox.setGravity(Gravity.CENTER);
+
+        TextView title = text("Bynova AI", 20, WHITE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER);
 
-        header.addView(
+        TextView subtitle = text("AI Assistant", 11, MUTED);
+        subtitle.setGravity(Gravity.CENTER);
+
+        titleBox.addView(
                 title,
+                new LinearLayout.LayoutParams(-1, dp(25))
+        );
+        titleBox.addView(
+                subtitle,
+                new LinearLayout.LayoutParams(-1, dp(18))
+        );
+
+        header.addView(
+                titleBox,
                 new LinearLayout.LayoutParams(0, dp(46), 1)
         );
 
         TextView newChat = text("+", 24, WHITE);
         newChat.setGravity(Gravity.CENTER);
         newChat.setTypeface(Typeface.DEFAULT_BOLD);
-        newChat.setBackground(round(CARD_2, 14));
+        newChat.setBackground(round(CARD_2, 15));
         newChat.setContentDescription("New Chat");
 
         header.addView(
@@ -1211,180 +1225,136 @@ public class MainActivity extends Activity {
 
         root.addView(
                 header,
-                new LinearLayout.LayoutParams(-1, dp(64))
+                new LinearLayout.LayoutParams(-1, dp(66))
         );
 
-        // Conversation area
+        // ===== Conversation =====
         chatScroll = new ScrollView(this);
         chatScroll.setFillViewport(true);
         chatScroll.setBackgroundColor(BG);
+        chatScroll.setClipToPadding(false);
         chatScroll.setPadding(
                 dp(10),
-                dp(6),
+                dp(8),
                 dp(10),
-                dp(6)
+                dp(8)
         );
 
         messages = new LinearLayout(this);
-        messages.setOrientation(
-                LinearLayout.VERTICAL
+        messages.setOrientation(LinearLayout.VERTICAL);
+        messages.setPadding(
+                dp(2),
+                dp(4),
+                dp(2),
+                dp(8)
         );
 
         chatScroll.addView(
                 messages,
-                new ScrollView.LayoutParams(
-                        -1,
-                        -2
-                )
+                new ScrollView.LayoutParams(-1, -2)
         );
 
         root.addView(
                 chatScroll,
-                new LinearLayout.LayoutParams(
-                        -1,
-                        0,
-                        1
-                )
+                new LinearLayout.LayoutParams(-1, 0, 1)
         );
 
-        // Composer
-        LinearLayout composer = new LinearLayout(this);
-        composer.setGravity(Gravity.CENTER_VERTICAL);
-        composer.setPadding(
+        // ===== Composer Area =====
+        LinearLayout composerOuter = new LinearLayout(this);
+        composerOuter.setOrientation(LinearLayout.VERTICAL);
+        composerOuter.setPadding(
                 dp(10),
-                dp(8),
+                dp(5),
                 dp(10),
                 dp(10)
         );
+        composerOuter.setBackgroundColor(BG);
 
-        composer.setBackground(
-                round(CARD_2, 22)
+        LinearLayout composer = new LinearLayout(this);
+        composer.setOrientation(LinearLayout.HORIZONTAL);
+        composer.setGravity(Gravity.CENTER_VERTICAL);
+        composer.setPadding(
+                dp(8),
+                dp(7),
+                dp(7),
+                dp(7)
         );
+        composer.setBackground(round(CARD_2, 24));
 
         chatInput = new EditText(this);
         EditText input = chatInput;
 
-        input.setHint(
-                "Message Bynova AI..."
-        );
+        input.setHint("Message Bynova AI...");
         input.setHintTextColor(MUTED);
         input.setTextColor(WHITE);
         input.setTextSize(15);
         input.setSingleLine(false);
         input.setMaxLines(5);
-        input.setBackgroundColor(
-                Color.TRANSPARENT
-        );
+        input.setBackgroundColor(Color.TRANSPARENT);
         input.setPadding(
                 dp(8),
-                0,
-                dp(8),
-                0
+                dp(2),
+                dp(6),
+                dp(2)
         );
+        input.setGravity(Gravity.CENTER_VERTICAL);
 
         composer.addView(
                 input,
                 new LinearLayout.LayoutParams(
                         0,
-                        dp(58),
+                        dp(54),
                         1
                 )
         );
 
-        TextView aiMode = text(
-                "AI",
-                13,
-                WHITE
-        );
+        // AI / More
+        TextView aiMode = text("AI", 13, WHITE);
         aiMode.setGravity(Gravity.CENTER);
         aiMode.setTypeface(Typeface.DEFAULT_BOLD);
         aiMode.setBackground(round(CARD, 16));
         aiMode.setContentDescription("AI features");
 
         LinearLayout.LayoutParams aiParams =
-                new LinearLayout.LayoutParams(
-                        dp(46),
-                        dp(46)
-                );
-
-        aiParams.setMargins(
-                dp(4),
-                0,
-                dp(4),
-                0
-        );
-
+                new LinearLayout.LayoutParams(dp(44), dp(44));
+        aiParams.setMargins(dp(3), 0, dp(3), 0);
         composer.addView(aiMode, aiParams);
 
-        TextView image = text(
-                "＋",
-                23,
-                WHITE
-        );
+        // Attachment
+        TextView image = text("＋", 22, WHITE);
         image.setGravity(Gravity.CENTER);
         image.setBackground(round(CARD, 16));
         image.setContentDescription("Attach image");
 
         composer.addView(
                 image,
-                new LinearLayout.LayoutParams(
-                        dp(46),
-                        dp(46)
-                )
+                new LinearLayout.LayoutParams(dp(44), dp(44))
         );
 
-        TextView mic = micButton = text(
-                "🎙",
-                21,
-                WHITE
-        );
+        // Microphone
+        TextView mic = micButton = text("🎙", 20, WHITE);
         mic.setGravity(Gravity.CENTER);
         mic.setBackground(round(CARD, 16));
         mic.setContentDescription("Voice input");
 
         LinearLayout.LayoutParams micParams =
-                new LinearLayout.LayoutParams(
-                        dp(46),
-                        dp(46)
-                );
-
-        micParams.setMargins(
-                dp(4),
-                0,
-                dp(2),
-                0
-        );
-
+                new LinearLayout.LayoutParams(dp(44), dp(44));
+        micParams.setMargins(dp(3), 0, dp(2), 0);
         composer.addView(mic, micParams);
 
-        TextView send = text(
-                "➤",
-                23,
-                WHITE
-        );
+        // Send
+        TextView send = text("➤", 22, WHITE);
         send.setGravity(Gravity.CENTER);
-        send.setBackground(
-                round(PRIMARY, 16)
-        );
+        send.setTypeface(Typeface.DEFAULT_BOLD);
+        send.setBackground(round(PRIMARY, 16));
+        send.setContentDescription("Send message");
 
         LinearLayout.LayoutParams sendParams =
-                new LinearLayout.LayoutParams(
-                        dp(48),
-                        dp(48)
-                );
+                new LinearLayout.LayoutParams(dp(46), dp(46));
+        sendParams.setMargins(dp(5), 0, 0, 0);
+        composer.addView(send, sendParams);
 
-        sendParams.setMargins(
-                dp(6),
-                0,
-                0,
-                0
-        );
-
-        composer.addView(
-                send,
-                sendParams
-        );
-
+        // ===== AI / More Menu =====
         aiMode.setOnClickListener(v -> {
             final String[] options = {
                     "Ask AI",
@@ -1396,49 +1366,43 @@ public class MainActivity extends Activity {
 
             new AlertDialog.Builder(MainActivity.this)
                     .setTitle("Bynova AI")
-                    .setItems(
-                            options,
-                            (dialog, which) -> {
-                                if (which == 0) {
-                                    input.requestFocus();
-                                    Toast.makeText(
-                                            MainActivity.this,
-                                            "Ask AI selected",
-                                            Toast.LENGTH_SHORT
-                                    ).show();
-                                } else if (which == 1) {
-                                    openImagePicker();
-                                } else if (which == 2) {
-                                    input.requestFocus();
-                                    Toast.makeText(
-                                            MainActivity.this,
-                                            "Image generation is being connected",
-                                            Toast.LENGTH_SHORT
-                                    ).show();
-                                } else if (which == 3) {
-                                    showFeatureUnavailable(
-                                            "File analysis",
-                                            "File analysis is not connected yet."
-                                    );
-                                } else if (which == 4) {
-                                    startVoiceInput();
-                                }
-                            }
-                    )
+                    .setItems(options, (dialog, which) -> {
+
+                        if (which == 0) {
+                            input.requestFocus();
+
+                        } else if (which == 1) {
+                            openImagePicker();
+
+                        } else if (which == 2) {
+                            input.requestFocus();
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Image generation is being connected",
+                                    Toast.LENGTH_SHORT
+                            ).show();
+
+                        } else if (which == 3) {
+                            showFeatureUnavailable(
+                                    "File analysis",
+                                    "File analysis is not connected yet."
+                            );
+
+                        } else if (which == 4) {
+                            startVoiceInput();
+                        }
+                    })
                     .show();
         });
 
-        image.setOnClickListener(
-                v -> openImagePicker()
-        );
+        image.setOnClickListener(v -> openImagePicker());
 
         mic.setOnClickListener(v -> startVoiceInput());
 
         send.setOnClickListener(v -> {
-            String message =
-                    input.getText()
-                            .toString()
-                            .trim();
+            String message = input.getText()
+                    .toString()
+                    .trim();
 
             if (message.isEmpty()) {
                 input.requestFocus();
@@ -1458,7 +1422,6 @@ public class MainActivity extends Activity {
                 sendToStreamingBackend(message);
             }
 
-            // Keep input ready for the next message.
             input.requestFocus();
         });
 
@@ -1476,12 +1439,14 @@ public class MainActivity extends Activity {
                 }
         );
 
-        root.addView(
+        composerOuter.addView(
                 composer,
-                new LinearLayout.LayoutParams(
-                        -1,
-                        dp(76)
-                )
+                new LinearLayout.LayoutParams(-1, dp(68))
+        );
+
+        root.addView(
+                composerOuter,
+                new LinearLayout.LayoutParams(-1, dp(78))
         );
 
         setContentView(root);
